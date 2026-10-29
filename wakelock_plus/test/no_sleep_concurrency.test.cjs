@@ -230,3 +230,12 @@ test('fallback: enable-disable-enable ends playing', async () => {
   await Promise.all([first, disable, second])
   assert.equal(await b.noSleep.isEnabled(), true)
 })
+
+
+test('fallback: first play remains synchronous for user activation', async () => {
+  const b = browser(false)
+  const enabling = b.noSleep.enable()
+  assert.equal(b.plays.length, 1, 'play() should run during the event handler')
+  b.plays[0].resolve()
+  await enabling
+})
