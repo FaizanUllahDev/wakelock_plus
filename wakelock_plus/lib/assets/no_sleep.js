@@ -59,8 +59,6 @@ function _classCallCheck(instance, Constructor) {
 var nativeWakeLock = 'wakeLock' in navigator
 
 var NoSleep = (function () {
-  var _nativeEnabledCompleter;
-  var _playVideoCompleter;
 
   function NoSleep() {
     var _this = this
@@ -70,6 +68,9 @@ var NoSleep = (function () {
     this.nativeEnabled = false
     if (nativeWakeLock) {
       this._wakeLock = null
+      this._nativeOperation = Promise.resolve()
+      this._nativePendingEnable = null
+      this._desiredEnabled = false
       var handleVisibilityChange = function handleVisibilityChange() {
         if (_this._wakeLock !== null && document.visibilityState === 'visible') {
           _this.enable()
@@ -86,6 +87,9 @@ var NoSleep = (function () {
 
       this._addSourceToVideo(this.noSleepVideo, 'webm', webm)
       this._addSourceToVideo(this.noSleepVideo, 'mp4', mp4)
+      this._videoOperation = Promise.resolve()
+      this._videoPendingEnable = null
+      this._desiredEnabled = false
 
       this.noSleepVideo.addEventListener('loadedmetadata', function () {
         if (_this.noSleepVideo.duration <= 1) {
@@ -116,51 +120,76 @@ var NoSleep = (function () {
     {
       key: 'enable',
       value: async function enable() {
-        var _this2 = this
-
         if (nativeWakeLock) {
-          // Disable any previously held wakelocks.
-          await this.disable()
-          if (_nativeEnabledCompleter == null) {
-            _nativeEnabledCompleter = new PromiseCompleter()
+          this._desiredEnabled = true
+          // Share in-flight requests and serialize state changes.
+          if (this._nativePendingEnable != null) {
+            return this._nativePendingEnable
           }
-          navigator.wakeLock
-            .request('screen')
-            .then(function (wakeLock) {
-              _this2._wakeLock = wakeLock
-              _this2.nativeEnabled = true
-
-              // We now have a wakelock. Notify all of the existing callers.
-              _this2._wakeLock.addEventListener('release', function () {
-                _this2.nativeEnabled = false
-                _this2._wakeLock = null
-              })
-
-              _nativeEnabledCompleter.complete()
-              _nativeEnabledCompleter = null
+          const operation = this._nativeOperation.then(async () => {
+            if (!this._desiredEnabled || this._wakeLock != null) {
+              return
+            }
+            const wakeLock = await navigator.wakeLock.request('screen')
+            wakeLock.addEventListener('release', () => {
+              // A late event from a previous lock must not clear the current one.
+              if (this._wakeLock === wakeLock) {
+                this._wakeLock = null
+                this.nativeEnabled = false
+              }
             })
-            .catch(function (err) {
-              _this2.nativeEnabled = false
-              var errorMessage = err.name + ', ' + err.message
-              _nativeEnabledCompleter.completeError(errorMessage)
-              _nativeEnabledCompleter = null
-            })
-          // We then wait for screen to be made available.
-          return _nativeEnabledCompleter.future
+            if (!this._desiredEnabled) {
+              await wakeLock.release()
+              return
+            }
+            this._wakeLock = wakeLock
+            this.nativeEnabled = true
+          })
+          this._nativePendingEnable = operation
+          // Keep the queue usable after a rejection, but reject the callers.
+          this._nativeOperation = operation.catch(() => {})
+          void operation.then(
+            () => {
+              if (this._nativePendingEnable === operation) {
+                this._nativePendingEnable = null
+              }
+            },
+            () => {
+              if (this._nativePendingEnable === operation) {
+                this._nativePendingEnable = null
+              }
+            },
+          )
+          return operation
         } else {
-          if (_playVideoCompleter == null) {
-            _playVideoCompleter = new PromiseCompleter()
+          this._desiredEnabled = true
+          if (this._videoPendingEnable != null) {
+            return this._videoPendingEnable
           }
-          var playPromise = this.noSleepVideo.play()
-          playPromise.then(function (res) {
-            _playVideoCompleter.complete()
-            _playVideoCompleter = null
-          }).catch(function (err) {
-            var errorMessage = err.name + ', ' + err.message
-            _playVideoCompleter.completeError(errorMessage)
-            _playVideoCompleter = null
-          });
-          return _playVideoCompleter.future
+          const operation = this._videoOperation.then(async () => {
+            if (!this._desiredEnabled || !this.noSleepVideo.paused) {
+              return
+            }
+            await this.noSleepVideo.play()
+            if (!this._desiredEnabled) {
+              this.noSleepVideo.pause()
+            }
+          })
+          this._videoPendingEnable = operation
+          this._videoOperation = operation.catch(() => {})
+          void operation.then(
+            () => {
+              if (this._videoPendingEnable === operation) {
+                this._videoPendingEnable = null
+              }
+            },
+            () => {
+              if (this._videoPendingEnable === operation) {
+                this._videoPendingEnable = null
+              }
+            },
+          )
+          return operation
         }
       },
     },
@@ -168,21 +197,30 @@ var NoSleep = (function () {
       key: 'disable',
       value: async function disable() {
         if (nativeWakeLock) {
-          // If we're still trying to enable the wakelock, wait for it to be enabled
-          if (_nativeEnabledCompleter != null) {
-            await _nativeEnabledCompleter.future
-          }
-          if (this._wakeLock != null) {
+          this._desiredEnabled = false
+          // Do not let a later enable inherit an obsolete pending request.
+          this._nativePendingEnable = null
+          const operation = this._nativeOperation.then(async () => {
+            if (this._desiredEnabled || this._wakeLock == null) {
+              return
+            }
+            const wakeLock = this._wakeLock
+            this._wakeLock = null
             this.nativeEnabled = false
-            this._wakeLock.release()
-          }
-
-          this._wakeLock = null
+            await wakeLock.release()
+          })
+          this._nativeOperation = operation.catch(() => {})
+          return operation
         } else {
-          if (_playVideoCompleter != null) {
-            await _playVideoCompleter.future
-          }
-          this.noSleepVideo.pause()
+          this._desiredEnabled = false
+          this._videoPendingEnable = null
+          const operation = this._videoOperation.then(() => {
+            if (!this._desiredEnabled) {
+              this.noSleepVideo.pause()
+            }
+          })
+          this._videoOperation = operation.catch(() => {})
+          return operation
         }
         return Promise.resolve();
       },
@@ -191,20 +229,10 @@ var NoSleep = (function () {
       key: 'isEnabled',
       value: async function isEnabled() {
         if (nativeWakeLock) {
-          // If we're still trying to enable the wakelock, wait for it to be enabled
-          if (_nativeEnabledCompleter != null) {
-            await _nativeEnabledCompleter.future
-          }
-
+          await this._nativeOperation
           return this.nativeEnabled
         } else {
-          if (_playVideoCompleter != null) {
-            await _playVideoCompleter.future
-          }
-          if (this.noSleepVideo == undefined) {
-            return false
-          }
-
+          await this._videoOperation
           return !this.noSleepVideo.paused
         }
       },
