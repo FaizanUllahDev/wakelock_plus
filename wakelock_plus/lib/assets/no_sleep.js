@@ -1,32 +1,5 @@
 /*! Based On NoSleep.js v0.12.0 - git.io/vfn01 - Rich Tibbett - MIT license */
 
-class PromiseCompleter {
-  _promise;
-  _resolve;
-  _reject;
-  constructor() {
-    this._promise = new Promise((resolve, reject) => {
-      this._resolve = resolve;
-      this._reject = reject;
-    });
-  }
-
-  isCompleted = false;
-
-  get future() {
-    return this._promise;
-  }
-
-  complete(value) {
-    this.isCompleted = true;
-    this._resolve(value);
-  }
-
-  completeError(error) {
-    this._reject(error);
-  }
-}
-
 var webm =
   'data:video/webm;base64,GkXfo0AgQoaBAUL3gQFC8oEEQvOBCEKCQAR3ZWJtQoeBAkKFgQIYU4BnQI0VSalmQCgq17FAAw9CQE2AQAZ3aGFtbXlXQUAGd2hhbW15RIlACECPQAAAAAAAFlSua0AxrkAu14EBY8WBAZyBACK1nEADdW5khkAFVl9WUDglhohAA1ZQOIOBAeBABrCBCLqBCB9DtnVAIueBAKNAHIEAAIAwAQCdASoIAAgAAUAmJaQAA3AA/vz0AAA='
 var mp4 =
@@ -87,7 +60,7 @@ var NoSleep = (function () {
 
       this._addSourceToVideo(this.noSleepVideo, 'webm', webm)
       this._addSourceToVideo(this.noSleepVideo, 'mp4', mp4)
-      this._videoOperation = Promise.resolve()
+      this._videoOperation = null
       this._videoPendingEnable = null
       this._desiredEnabled = false
 
@@ -166,17 +139,27 @@ var NoSleep = (function () {
           if (this._videoPendingEnable != null) {
             return this._videoPendingEnable
           }
-          const operation = this._videoOperation.then(async () => {
+          const play = async () => {
             if (!this._desiredEnabled || !this.noSleepVideo.paused) {
               return
             }
+            // Preserve user activation by calling play synchronously when idle.
             await this.noSleepVideo.play()
             if (!this._desiredEnabled) {
               this.noSleepVideo.pause()
             }
-          })
+          }
+          const operation = this._videoOperation == null
+            ? play()
+            : this._videoOperation.then(play)
           this._videoPendingEnable = operation
-          this._videoOperation = operation.catch(() => {})
+          const queue = operation.catch(() => {})
+          this._videoOperation = queue
+          void queue.then(() => {
+            if (this._videoOperation === queue) {
+              this._videoOperation = null
+            }
+          })
           void operation.then(
             () => {
               if (this._videoPendingEnable === operation) {
@@ -214,12 +197,21 @@ var NoSleep = (function () {
         } else {
           this._desiredEnabled = false
           this._videoPendingEnable = null
-          const operation = this._videoOperation.then(() => {
+          const pause = () => {
             if (!this._desiredEnabled) {
               this.noSleepVideo.pause()
             }
+          }
+          const operation = this._videoOperation == null
+            ? Promise.resolve(pause())
+            : this._videoOperation.then(pause)
+          const queue = operation.catch(() => {})
+          this._videoOperation = queue
+          void queue.then(() => {
+            if (this._videoOperation === queue) {
+              this._videoOperation = null
+            }
           })
-          this._videoOperation = operation.catch(() => {})
           return operation
         }
         return Promise.resolve();
@@ -232,7 +224,9 @@ var NoSleep = (function () {
           await this._nativeOperation
           return this.nativeEnabled
         } else {
-          await this._videoOperation
+          if (this._videoOperation != null) {
+            await this._videoOperation
+          }
           return !this.noSleepVideo.paused
         }
       },
