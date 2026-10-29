@@ -43,7 +43,7 @@ var NoSleep = (function () {
       this._wakeLock = null
       this._nativeOperation = Promise.resolve()
       this._nativePendingEnable = null
-      this._desiredEnabled = false
+      this._requestEnabling = false
       var handleVisibilityChange = function handleVisibilityChange() {
         if (_this._wakeLock !== null && document.visibilityState === 'visible') {
           _this.enable()
@@ -62,7 +62,7 @@ var NoSleep = (function () {
       this._addSourceToVideo(this.noSleepVideo, 'mp4', mp4)
       this._videoOperation = null
       this._videoPendingEnable = null
-      this._desiredEnabled = false
+      this._requestEnabling = false
 
       this.noSleepVideo.addEventListener('loadedmetadata', function () {
         if (_this.noSleepVideo.duration <= 1) {
@@ -94,13 +94,13 @@ var NoSleep = (function () {
       key: 'enable',
       value: async function enable() {
         if (nativeWakeLock) {
-          this._desiredEnabled = true
+          this._requestEnabling = true
           // Share in-flight requests and serialize state changes.
           if (this._nativePendingEnable != null) {
             return this._nativePendingEnable
           }
           const operation = this._nativeOperation.then(async () => {
-            if (!this._desiredEnabled || this._wakeLock != null) {
+            if (!this._requestEnabling || this._wakeLock != null) {
               return
             }
             const wakeLock = await navigator.wakeLock.request('screen')
@@ -111,7 +111,7 @@ var NoSleep = (function () {
                 this.nativeEnabled = false
               }
             })
-            if (!this._desiredEnabled) {
+            if (!this._requestEnabling) {
               await wakeLock.release()
               return
             }
@@ -135,17 +135,17 @@ var NoSleep = (function () {
           )
           return operation
         } else {
-          this._desiredEnabled = true
+          this._requestEnabling = true
           if (this._videoPendingEnable != null) {
             return this._videoPendingEnable
           }
           const play = async () => {
-            if (!this._desiredEnabled || !this.noSleepVideo.paused) {
+            if (!this._requestEnabling || !this.noSleepVideo.paused) {
               return
             }
             // Preserve user activation by calling play synchronously when idle.
             await this.noSleepVideo.play()
-            if (!this._desiredEnabled) {
+            if (!this._requestEnabling) {
               this.noSleepVideo.pause()
             }
           }
@@ -180,11 +180,11 @@ var NoSleep = (function () {
       key: 'disable',
       value: async function disable() {
         if (nativeWakeLock) {
-          this._desiredEnabled = false
+          this._requestEnabling = false
           // Do not let a later enable inherit an obsolete pending request.
           this._nativePendingEnable = null
           const operation = this._nativeOperation.then(async () => {
-            if (this._desiredEnabled || this._wakeLock == null) {
+            if (this._requestEnabling || this._wakeLock == null) {
               return
             }
             const wakeLock = this._wakeLock
@@ -195,10 +195,10 @@ var NoSleep = (function () {
           this._nativeOperation = operation.catch(() => {})
           return operation
         } else {
-          this._desiredEnabled = false
+          this._requestEnabling = false
           this._videoPendingEnable = null
           const pause = () => {
-            if (!this._desiredEnabled) {
+            if (!this._requestEnabling) {
               this.noSleepVideo.pause()
             }
           }
